@@ -173,9 +173,15 @@ export default function App() {
       });
       return;
     }
-    drawRef.current = { points: [p] };
-    setDrawPts([p]);
-    setStatus(`${tool} : cliquez pour définir le second point`);
+    if (!drawRef.current) {
+      drawRef.current = { points: [p] };
+      setDrawPts([p]);
+      setStatus(`${tool} : cliquez pour définir le second point`);
+      return;
+    }
+    const pts = [drawRef.current.points[0], p];
+    drawRef.current.points = pts;
+    finishDraw(pts);
   };
 
   const onMouseMove = (ev: React.MouseEvent) => {
@@ -253,9 +259,6 @@ export default function App() {
       return;
     }
     dragRef.current = null;
-    if (drawRef.current && drawPts.length >= 2 && tool !== 'polyline') {
-      finishDraw(drawPts);
-    }
   };
 
   const onDoubleClick = () => {

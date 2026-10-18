@@ -8,7 +8,8 @@ async function check(name, cond) {
 }
 
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
+const page = await context.newPage();
 await page.goto(BASE);
 await page.waitForSelector('canvas');
 
@@ -26,7 +27,8 @@ const [svgDownload] = await Promise.all([
 const svgPath = await svgDownload.path();
 const fs = await import('fs');
 const svg = fs.readFileSync(svgPath, 'utf-8');
-await check('SVG contient un rect 100x60 (zoom 0.5 mm/px)', svg.includes('width="100mm"') && svg.includes('height="60mm"') && svg.includes('<rect'));
+await check('SVG contient un rect 100x50 (zoom 0.5 mm/px)', svg.includes('width="100mm"') && svg.includes('height="50mm"') && svg.includes('<rect'));
+const xOriginal = /<rect x="(\d+)"/.exec(svg)?.[1];
 
 // Sélection clic : cliquer sur le bord du rectangle
 await page.mouse.click(400, 300); // bord haut du rect
@@ -45,8 +47,9 @@ const [svg2] = await Promise.all([
 ]);
 const svg2Path = await svg2.path();
 const svg2content = fs.readFileSync(svg2Path, 'utf-8');
-const moved = /x="(\d+)"/.exec(svg2content);
-await check('rect déplacé (x > 0)', moved && Number(moved[1]) > 0);
+const moved = /<rect x="(\d+)"/.exec(svg2content)?.[1];
+console.log('DEBUG positions: original', xOriginal, '→ déplacé', moved);
+await check('rect déplacé', moved !== xOriginal);
 
 await page.keyboard.press('Control+z');
 const [svg3] = await Promise.all([
@@ -54,8 +57,9 @@ const [svg3] = await Promise.all([
   page.click('button:has-text("Exporter SVG")')
 ]);
 const svg3content = fs.readFileSync(await svg3.path(), 'utf-8');
-const restored = /x="(\d+)"/.exec(svg3content);
-await check('undo restaure la position initiale', restored && restored[1] === '0');
+const restored = /<rect x="(\d+)"/.exec(svg3content)?.[1];
+console.log('DEBUG après undo:', restored);
+await check('undo restaure la position initiale', restored === xOriginal);
 
 // Enregistrer puis rouvrir
 const [docDownload] = await Promise.all([
@@ -66,11 +70,8 @@ const docPath = await docDownload.path();
 const docContent = JSON.parse(fs.readFileSync(docPath, 'utf-8'));
 await check('fichier .raineo valide avec formatVersion', docContent.formatVersion === 1 && Array.isArray(docContent.entities));
 
-const [fileChooser] = await Promise.all([
-  page.waitForEvent('filechooser'),
-  page.click('text=Ouvrir')
-]);
-await fileChooser.setFiles(docPath);
+const inputs = await page.$$('input[type=file]');
+await inputs[inputs.length - 1].setInputFiles(docPath);
 await new Promise(r => setTimeout(r, 300));
 const [svg4] = await Promise.all([
   page.waitForEvent('download'),

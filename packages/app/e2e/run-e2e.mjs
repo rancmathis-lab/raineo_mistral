@@ -11,6 +11,8 @@ const browser = await chromium.launch();
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
 const page = await context.newPage();
 await page.goto(BASE);
+await page.waitForSelector('.welcome-card');
+await page.click('button:has-text("Nouveau document")');
 await page.waitForSelector('canvas');
 
 // Dessiner un rectangle : activer l'outil, deux clics

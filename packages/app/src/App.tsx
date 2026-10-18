@@ -1,51 +1,57 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   DocumentData, Entity, History, Id, Point,
   createDocument, findLayer,
-  addEntityCmd, translateEntitiesCmd, deleteEntitiesCmd,
+  addEntityCmd, deleteEntitiesCmd,
   makeLine, makeRect, makeCircle, makePolyline,
   serialize, parse, exportSvg
 } from '@raineo/core';
+import { IconSelect, IconLine, IconRect, IconCircle, IconPolyline } from './icons.js';
 
 type Tool = 'select' | 'line' | 'rect' | 'circle' | 'polyline';
+type Style = 'cut' | 'crease' | 'construction' | 'annotation';
 
-const MM_PER_PX = 0.5;
+const STYLE_INFO: Record<Style, { label: string; color: string }> = {
+  cut: { label: 'Découpe', color: '#c94f46' },
+  crease: { label: 'Rainage', color: '#3f7fb5' },
+  construction: { label: 'Construction', color: '#9b8f80' },
+  annotation: { label: 'Annotation', color: '#5f9e6a' }
+};
 
-function useDocument() {
-  const docRef = useRef<DocumentData>(createDocument('Sans titre'));
-  const historyRef = useRef<History>(new History());
-  const [, force] = useState(0);
-  const bump = useCallback(() => force(v => v + 1), []);
-  const apply = useCallback((cmd: Parameters<History['apply']>[1]) => {
-    historyRef.current.apply(docRef.current, cmd);
-    bump();
-  }, [bump]);
-  const undo = useCallback(() => { historyRef.current.undo(docRef.current); bump(); }, [bump]);
-  const redo = useCallback(() => { historyRef.current.redo(docRef.current); bump(); }, [bump]);
-  return { docRef, historyRef, apply, undo, redo, bump };
-}
+const LAYER_COLORS = ['#c94f46', '#3f7fb5', '#9b8f80', '#5f9e6a', '#a8684c', '#8a6fae'];
 
 export default function App() {
-  const { docRef, historyRef, apply, undo, redo, bump } = useDocument();
-  const [style, setStyle] = useState<'cut' | 'crease' | 'construction' | 'annotation'>('cut');
+  const docRef = useRef<DocumentData>(createDocument('Sans titre'));
+  const historyRef = useRef<History>(new History());
+  const [started, setStarted] = useState(false);
   const [tool, setTool] = useState<Tool>('select');
+  const [style, setStyle] = useState<Style>('cut');
   const [selection, setSelection] = useState<Set<Id>>(new Set());
   const [status, setStatus] = useState('Prêt');
+  const [, force] = useState(0);
+  const bump = useCallback(() => force(v => v + 1), []);
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const viewRef = useRef({ panX: 100, panY: 100, zoom: 1 });
+  const viewRef = useRef({ panX: 80, panY: 60, zoom: 2 });
   const dragRef = useRef<any>(null);
   const drawRef = useRef<{ points: Point[] } | null>(null);
   const [drawPts, setDrawPts] = useState<Point[]>([]);
 
   const doc = docRef.current;
 
+  const apply = useCallback((cmd: Parameters<History['apply']>[1]) => {
+    historyRef.current.apply(docRef.current, cmd);
+    bump();
+  }, [bump]);
+  const undo = useCallback(() => { historyRef.current.undo(docRef.current); bump(); }, [bump]);
+  const redo = useCallback(() => { historyRef.current.redo(docRef.current); bump(); }, [bump]);
+
   const toWorld = useCallback((ev: { clientX: number; clientY: number }): Point => {
-    const canvas = canvasRef.current!;
-    const r = canvas.getBoundingClientRect();
+    const r = canvasRef.current!.getBoundingClientRect();
     const v = viewRef.current;
     return {
-      x: (ev.clientX - r.left - v.panX) / (v.zoom / MM_PER_PX),
-      y: -(ev.clientY - r.top - v.panY) / (v.zoom / MM_PER_PX)
+      x: (ev.clientX - r.left - v.panX) / v.zoom,
+      y: -(ev.clientY - r.top - v.panY) / v.zoom
     };
   }, []);
 
@@ -56,27 +62,53 @@ export default function App() {
     const ctx = canvas.getContext('2d')!;
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth, h = canvas.clientHeight;
-    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
-      canvas.width = w * dpr; canvas.height = h * dpr;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = '#26282b';
+    ctx.fillStyle = '#f5ede3';
     ctx.fillRect(0, 0, w, h);
     const v = viewRef.current;
-    const s = v.zoom / MM_PER_PX;
     ctx.save();
     ctx.translate(v.panX, v.panY);
-    ctx.scale(s, -s);
+    ctx.scale(v.zoom, -v.zoom);
 
-    const colors: Record<string, string> = {
-      cut: '#e05050', crease: '#4d9fff', construction: '#808080', annotation: '#4dbb63'
-    };
+    // grille adaptative (pas en mm : 1, 5, 10, 50, 100)
+    const pxPerMm = v.zoom;
+    let step = 1;
+    for (const s of [1, 5, 10, 50, 100, 500]) {
+      if (s * pxPerMm >= 14) { step = s; break; }
+      step = s;
+    }
+    const left = -v.panX / v.zoom, right = (w - v.panX) / v.zoom;
+    const bottom = -(h - v.panY) / v.zoom, top = v.panY / v.zoom;
+    ctx.lineWidth = 1 / v.zoom;
+    ctx.strokeStyle = '#e3d6c6';
+    ctx.beginPath();
+    for (let x = Math.ceil(left / step) * step; x <= right; x += step) {
+      ctx.moveTo(x, bottom); ctx.lineTo(x, top);
+    }
+    for (let y = Math.ceil(bottom / step) * step; y <= top; y += step) {
+      ctx.moveTo(left, y); ctx.lineTo(right, y);
+    }
+    ctx.stroke();
+
+    // axes origine
+    ctx.strokeStyle = '#c8b8a4';
+    ctx.lineWidth = 1.5 / v.zoom;
+    ctx.beginPath();
+    ctx.moveTo(left, 0); ctx.lineTo(right, 0);
+    ctx.moveTo(0, bottom); ctx.lineTo(0, top);
+    ctx.stroke();
+
+    // entités
     for (const e of doc.entities) {
       const layer = findLayer(doc, e.layerId);
       if (!layer?.visible) continue;
       const selected = selection.has(e.id);
-      ctx.strokeStyle = selected ? '#ffffff' : colors[e.style] ?? '#eee';
-      ctx.lineWidth = selected ? 0.4 : 0.25;
+      ctx.strokeStyle = selected ? '#2b2320' : STYLE_INFO[e.style as Style]?.color ?? '#c94f46';
+      ctx.lineWidth = (selected ? 1.4 : 0.8) / Math.max(1, v.zoom * 0.35);
+      if (selected) ctx.setLineDash([4 / v.zoom, 3 / v.zoom]);
       ctx.beginPath();
       switch (e.type) {
         case 'line':
@@ -95,15 +127,19 @@ export default function App() {
         }
       }
       ctx.stroke();
+      ctx.setLineDash([]);
     }
+
     // aperçu du tracé en cours
     if (drawPts.length > 0) {
-      ctx.strokeStyle = '#ffd070';
-      ctx.lineWidth = 0.25;
+      ctx.strokeStyle = '#e8934a';
+      ctx.lineWidth = 0.8 / Math.max(1, v.zoom * 0.35);
+      ctx.setLineDash([3 / v.zoom, 2 / v.zoom]);
       ctx.beginPath();
       ctx.moveTo(drawPts[0].x, drawPts[0].y);
       for (let i = 1; i < drawPts.length; i++) ctx.lineTo(drawPts[i].x, drawPts[i].y);
       ctx.stroke();
+      ctx.setLineDash([]);
     }
     ctx.restore();
   }, [doc, selection, drawPts]);
@@ -115,13 +151,33 @@ export default function App() {
     const ro = new ResizeObserver(() => render());
     ro.observe(c);
     return () => ro.disconnect();
-  }, [render]);
+  }, [render, started]);
+
+  // ===== molette zoom =====
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const onWheel = (ev: WheelEvent) => {
+      ev.preventDefault();
+      const r = c.getBoundingClientRect();
+      const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+      const v = viewRef.current;
+      const factor = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const nz = Math.min(40, Math.max(0.5, v.zoom * factor));
+      v.panX = mx - (mx - v.panX) * (nz / v.zoom);
+      v.panY = my - (my - v.panY) * (nz / v.zoom);
+      v.zoom = nz;
+      render();
+    };
+    c.addEventListener('wheel', onWheel, { passive: false });
+    return () => c.removeEventListener('wheel', onWheel);
+  }, [render, started]);
 
   // ===== clavier =====
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if (ev.target instanceof HTMLInputElement) return;
-      if (ev.ctrlKey && ev.key.toLowerCase() === 'z' && !ev.shiftKey && !ev.altKey) { ev.preventDefault(); undo(); }
+      if (ev.ctrlKey && ev.key.toLowerCase() === 'z' && !ev.shiftKey) { ev.preventDefault(); undo(); }
       else if (ev.key === 'Delete' && selection.size > 0) {
         apply(deleteEntitiesCmd([...selection])); setSelection(new Set());
       } else if (ev.key === 'Escape') { setDrawPts([]); drawRef.current = null; setSelection(new Set()); }
@@ -132,7 +188,7 @@ export default function App() {
 
   // ===== souris =====
   const pickEntity = useCallback((p: Point): Id | null => {
-    const tol = 5 * MM_PER_PX / viewRef.current.zoom * 0.5;
+    const tol = 6 / viewRef.current.zoom;
     let best: Id | null = null, bestD = Infinity;
     for (const e of doc.entities) {
       const layer = findLayer(doc, e.layerId);
@@ -158,19 +214,13 @@ export default function App() {
       } else if (!ev.ctrlKey) setSelection(new Set());
       dragRef.current = { start: p, screenStart: { x: ev.clientX, y: ev.clientY }, moving: false };
       if (hit) {
-        (dragRef.current as any).moving = [...next];
-        (dragRef.current as any).originals = new Map(
-          doc.entities.filter(e => next.has(e.id)).map(e => [e.id, e])
-        );
+        dragRef.current.moving = [...next];
+        dragRef.current.originals = new Map(doc.entities.filter(e => next.has(e.id)).map(e => [e.id, e]));
       }
       return;
     }
-    // outils de dessin
     if (tool === 'polyline') {
-      setDrawPts(prev => {
-        const pts = [...prev, p];
-        return pts;
-      });
+      setDrawPts(prev => [...prev, p]);
       return;
     }
     if (!drawRef.current) {
@@ -206,7 +256,7 @@ export default function App() {
       setDrawPts(prev => [prev[0], p]);
     }
     if (tool === 'polyline' && drawPts.length >= 1) {
-      setStatus(`Polyligne : ${drawPts.length + 1} points — clic pour ajouter, double-clic ou Entrée pour terminer`);
+      setStatus(`Polyligne : ${drawPts.length} point(s) — clic pour ajouter, double-clic pour terminer`);
     }
   };
 
@@ -238,7 +288,7 @@ export default function App() {
     setDrawPts([]);
   };
 
-  const onMouseUp = (ev: React.MouseEvent) => {
+  const onMouseUp = () => {
     const d = dragRef.current;
     if (d && d.moving) {
       const ids = d.moving as Id[];
@@ -246,12 +296,8 @@ export default function App() {
       const finalPositions = new Map(doc.entities.filter(e => ids.includes(e.id)).map(e => [e.id, e]));
       const cmd = {
         label: 'Déplacer',
-        do(doc2: DocumentData) {
-          doc2.entities = doc2.entities.map(e => finalPositions.get(e.id) ?? e);
-        },
-        undo(doc2: DocumentData) {
-          doc2.entities = doc2.entities.map(e => originals.get(e.id) ?? e);
-        }
+        do(doc2: DocumentData) { doc2.entities = doc2.entities.map(e => finalPositions.get(e.id) ?? e); },
+        undo(doc2: DocumentData) { doc2.entities = doc2.entities.map(e => originals.get(e.id) ?? e); }
       };
       historyRef.current.apply(doc, cmd);
       bump();
@@ -263,10 +309,6 @@ export default function App() {
 
   const onDoubleClick = () => {
     if (tool === 'polyline' && drawPts.length >= 2) finishDraw(drawPts);
-  };
-
-  const onKeyDownCanvas = (ev: React.KeyboardEvent) => {
-    if (ev.key === 'Enter' && tool === 'polyline' && drawPts.length >= 2) finishDraw(drawPts);
   };
 
   // ===== fichiers =====
@@ -282,12 +324,12 @@ export default function App() {
   const open = async (file: File) => {
     try {
       const text = await file.text();
-      const loaded = parse(text);
-      docRef.current = loaded;
+      docRef.current = parse(text);
       historyRef.current.clear();
       setSelection(new Set());
+      setStarted(true);
       bump();
-      setStatus(`Ouvert : ${loaded.name}`);
+      setStatus(`Ouvert : ${docRef.current.name}`);
     } catch (err: any) {
       setStatus(`Erreur : ${err.message}`);
     }
@@ -301,38 +343,69 @@ export default function App() {
     a.href = URL.createObjectURL(blob);
     a.download = `${doc.name || 'sans-titre'}.svg`;
     a.click();
-    setStatus('SVG exporté (1:1, mm)');
+    setStatus('SVG exporté (échelle 1:1, millimètres)');
   };
 
-  const tools: { id: Tool; label: string }[] = [
-    { id: 'select', label: 'Sélection' },
-    { id: 'line', label: 'Ligne' },
-    { id: 'rect', label: 'Rectangle' },
-    { id: 'circle', label: 'Cercle' },
-    { id: 'polyline', label: 'Polyligne' }
+  const zoomPct = Math.round(viewRef.current.zoom / 2 * 100);
+
+  // ===== écran d'accueil =====
+  if (!started) {
+    return (
+      <div className="welcome">
+        <div className="welcome-card">
+          <span className="logo">Rain<span className="accent">éo</span></span>
+          <div className="tagline">Conception structurelle d'emballages en carton</div>
+          <div className="welcome-actions">
+            <button onClick={() => { setStarted(true); setStatus('Nouveau document — choisissez un outil et dessinez'); }}>
+              Nouveau document
+            </button>
+            <label>
+              <button className="secondary" onClick={e => (e.currentTarget.previousElementSibling as HTMLInputElement)?.click()}>Ouvrir un fichier…</button>
+              <input type="file" accept=".raineo" onChange={e => e.target.files?.[0] && open(e.target.files[0])} />
+            </label>
+          </div>
+          <div className="welcome-note">Format .raineo — export SVG à l'échelle 1:1</div>
+        </div>
+      </div>
+    );
+  }
+
+  const tools: { id: Tool; label: string; icon: React.ReactNode }[] = [
+    { id: 'select', label: 'Sélection', icon: <IconSelect /> },
+    { id: 'line', label: 'Ligne', icon: <IconLine /> },
+    { id: 'rect', label: 'Rectangle', icon: <IconRect /> },
+    { id: 'circle', label: 'Cercle', icon: <IconCircle /> },
+    { id: 'polyline', label: 'Polyligne', icon: <IconPolyline /> }
   ];
 
   return (
     <div className="app">
       <div className="menubar">
-        <strong style={{ color: '#fff' }}>Rainéo</strong>
-        <label>Nouveau
-          <input type="file" accept=".raineo" hidden onChange={e => e.target.files?.[0] && open(e.target.files[0])} />
+        <span className="logo">Rain<span className="accent">éo</span></span>
+        <div className="menu-sep" />
+        <button className="ghost" onClick={save}>Enregistrer</button>
+        <label>
+          <button className="ghost" onClick={e => (e.currentTarget.previousElementSibling as HTMLInputElement)?.click()}>Ouvrir</button>
+          <input type="file" accept=".raineo" onChange={e => e.target.files?.[0] && open(e.target.files[0])} />
         </label>
-        <button onClick={save}>Enregistrer</button>
-        <label>Ouvrir
-          <input type="file" accept=".raineo" hidden onChange={e => e.target.files?.[0] && open(e.target.files[0])} />
-        </label>
-        <button onClick={exportSvgFile}>Exporter SVG</button>
-        <button onClick={undo}>Annuler</button>
-        <button onClick={redo}>Rétablir</button>
+        <button className="ghost" onClick={exportSvgFile}>Exporter SVG</button>
+        <div className="menu-sep" />
+        <button className="ghost" onClick={undo}>Annuler</button>
+        <button className="ghost" onClick={redo}>Rétablir</button>
       </div>
       <div className="toolbar">
-        {tools.map(t => (
-          <button key={t.id} className={tool === t.id ? 'active' : ''} onClick={() => { setTool(t.id); setDrawPts([]); drawRef.current = null; }}>
-            {t.label}
-          </button>
-        ))}
+        <div className="group">
+          {tools.map(t => (
+            <button
+              key={t.id}
+              className={`tool-btn ${tool === t.id ? 'active' : ''}`}
+              title={t.label}
+              onClick={() => { setTool(t.id); setDrawPts([]); drawRef.current = null; }}
+            >
+              {t.icon}{t.label}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="main">
         <div className="canvaswrap">
@@ -342,51 +415,52 @@ export default function App() {
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
             onDoubleClick={onDoubleClick}
-            onKeyDown={onKeyDownCanvas}
-            tabIndex={0}
           />
+          <div className="zoom-badge">{zoomPct}%</div>
         </div>
         <div className="sidepanel">
           <h3>Calques</h3>
-          {doc.layers.map(l => (
-            <div key={l.id} className={`layer-row ${l.id === doc.activeLayerId ? 'active-layer' : ''}`}>
+          {doc.layers.map((l, i) => (
+            <div
+              key={l.id}
+              className={`layer-row ${l.id === doc.activeLayerId ? 'active-layer' : ''}`}
+              onClick={() => { docRef.current.activeLayerId = l.id; bump(); }}
+            >
               <input
                 type="checkbox"
                 checked={l.visible}
+                onClick={e => e.stopPropagation()}
                 onChange={() => { l.visible = !l.visible; bump(); }}
               />
-              <span onClick={() => { docRef.current.activeLayerId = l.id; bump(); }}>{l.name}</span>
+              <span className="dot" style={{ background: LAYER_COLORS[i % LAYER_COLORS.length] }} />
+              <span className="name">{l.name}</span>
             </div>
           ))}
-          <h3>Style de trait</h3>
-          <div className="section">
-            {(['cut', 'crease', 'construction', 'annotation'] as const).map(s => (
-              <div key={s} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '2px 0' }}>
-                <input
-                  type="radio"
-                  name="style"
-                  value={s}
-                  checked={style === s}
-                  onChange={() => setStyle(s)}
-                />
-                <span style={{ color: s === 'cut' ? '#e05050' : s === 'crease' ? '#4d9fff' : s === 'construction' ? '#808080' : '#4dbb63' }}>
-                  {s === 'cut' ? 'Découpe' : s === 'crease' ? 'Rainage' : s === 'construction' ? 'Construction' : 'Annotation'}
-                </span>
-              </div>
-            ))}
-          </div>
+          <h3>Type de trait</h3>
+          {(['cut', 'crease', 'construction', 'annotation'] as Style[]).map(s => (
+            <label key={s} className="style-radio">
+              <input type="radio" name="style" checked={style === s} onChange={() => setStyle(s)} />
+              <span className="swatch" style={{ background: STYLE_INFO[s].color }} />
+              {STYLE_INFO[s].label}
+            </label>
+          ))}
           <h3>Sélection</h3>
           <div>{selection.size} élément(s)</div>
-          <h3>Navigation</h3>
-          <div style={{ lineHeight: 1.6 }}>
+          <h3>Aide</h3>
+          <div style={{ lineHeight: 1.7, color: 'var(--fg-dim)' }}>
             Molette : zoom<br />
             Alt+clic ou clic milieu : déplacer la vue<br />
-            Ctrl+Z : annuler<br />
-            Suppr : supprimer
+            Ctrl+clic : sélection multiple<br />
+            Ctrl+Z : annuler — Suppr : supprimer<br />
+            Échap : annuler le tracé
           </div>
         </div>
       </div>
-      <div className="statusbar">{status} — Zoom {Math.round((viewRef.current.zoom / MM_PER_PX) * 1000) / 10}%</div>
+      <div className="statusbar">
+        <span className="main-status">{status}</span>
+        <span>Zoom {zoomPct}%</span>
+        <span>Unité : mm</span>
+      </div>
     </div>
   );
 }

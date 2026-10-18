@@ -7,6 +7,7 @@
     "packages/app"
   ],
   "scripts": {
+    "predev": "npm run build -w packages/core",
     "build": "npm run build -w packages/core && npm run build -w packages/app",
     "test": "npm test -w packages/core",
     "dev": "npm run dev -w packages/app"
